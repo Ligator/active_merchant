@@ -287,7 +287,7 @@ class RemoteAdyenTest < Test::Unit::TestCase
   end
 
   def test_successful_authorize_with_network_token
-    response = @gateway.authorize(@amount, @nt_credit_card, @options)
+    response = @gateway.authorize(@amount, @nt_credit_card, @options.merge(switch_cryptogram_mapping_nt: true))
     assert_success response
     assert_equal 'Authorised', response.message
   end
@@ -456,6 +456,7 @@ class RemoteAdyenTest < Test::Unit::TestCase
     response = @gateway.authorize(@amount, @declined_card, @options)
     assert_failure response
     assert_equal 'Refused', response.message
+    assert_equal 'Refused', response.error_code
   end
 
   def test_failed_authorize_with_bank_account
@@ -530,8 +531,44 @@ class RemoteAdyenTest < Test::Unit::TestCase
     assert_equal response.authorization, first_auth
   end
 
+  def test_successful_purchase_with_billing_default_country_code
+    options = @options.dup.update({
+      billing_address: {
+        address1: 'Infinite Loop',
+        address2: 1,
+        country: '',
+        city: 'Cupertino',
+        state: 'CA',
+        zip: '95014'
+      }
+    })
+    response = @gateway.purchase(@amount, @credit_card, options)
+    assert_success response
+  end
+
+  def test_successful_purchase_with_shipping_default_country_code
+    options = @options.dup.update({
+      shipping_address: {
+        address1: 'Infinite Loop',
+        address2: 1,
+        country: '',
+        city: 'Cupertino',
+        state: 'CA',
+        zip: '95014'
+      }
+    })
+    response = @gateway.purchase(@amount, @credit_card, options)
+    assert_success response
+  end
+
   def test_successful_purchase_with_apple_pay
-    response = @gateway.purchase(@amount, @apple_pay_card, @options)
+    response = @gateway.purchase(@amount, @apple_pay_card, @options.merge(switch_cryptogram_mapping_nt: true))
+    assert_success response
+    assert_equal '[capture-received]', response.message
+  end
+
+  def test_successful_purchase_with_apple_pay_with_ld_flag_false
+    response = @gateway.purchase(@amount, @apple_pay_card, @options.merge(switch_cryptogram_mapping_nt: false))
     assert_success response
     assert_equal '[capture-received]', response.message
   end
@@ -549,13 +586,43 @@ class RemoteAdyenTest < Test::Unit::TestCase
   end
 
   def test_successful_purchase_with_google_pay
-    response = @gateway.purchase(@amount, @google_pay_card, @options)
+    response = @gateway.purchase(@amount, @google_pay_card, @options.merge(switch_cryptogram_mapping_nt: true))
+    assert_success response
+    assert_equal '[capture-received]', response.message
+  end
+
+  def test_successful_purchase_with_google_pay_pan_only
+    response = @gateway.purchase(@amount, @credit_card, @options.merge(wallet_type: :google_pay))
+    assert_success response
+    assert_equal '[capture-received]', response.message
+  end
+
+  def test_successful_purchase_with_google_pay_without_billing_address_and_address_override
+    options = {
+      reference: '345123',
+      email: 'john.smith@test.com',
+      ip: '77.110.174.153',
+      shopper_reference: 'John Smith',
+      billing_address: {
+        address1: '',
+        address2: '',
+        country: 'US',
+        city: 'Beverly Hills',
+        state: 'CA',
+        zip: '90210'
+      },
+      order_id: '123',
+      stored_credential: { reason_type: 'unscheduled' },
+      address_override: true
+    }
+
+    response = @gateway.purchase(@amount, @google_pay_card, options)
     assert_success response
     assert_equal '[capture-received]', response.message
   end
 
   def test_successful_purchase_with_google_pay_and_truncate_order_id
-    response = @gateway.purchase(@amount, @google_pay_card, @options.merge(order_id: @long_order_id))
+    response = @gateway.purchase(@amount, @google_pay_card, @options.merge(order_id: @long_order_id, switch_cryptogram_mapping_nt: true))
     assert_success response
     assert_equal '[capture-received]', response.message
   end
@@ -579,7 +646,7 @@ class RemoteAdyenTest < Test::Unit::TestCase
   end
 
   def test_successful_purchase_with_network_token
-    response = @gateway.purchase(@amount, @nt_credit_card, @options)
+    response = @gateway.purchase(@amount, @nt_credit_card, @options.merge(switch_cryptogram_mapping_nt: true))
     assert_success response
     assert_equal '[capture-received]', response.message
   end
@@ -1234,12 +1301,17 @@ class RemoteAdyenTest < Test::Unit::TestCase
   def test_blank_country_for_purchase
     @options[:billing_address][:country] = ''
     response = @gateway.authorize(@amount, @credit_card, @options)
-    assert_failure response
-    assert_match Gateway::STANDARD_ERROR_CODE[:incorrect_address], response.error_code
+    assert_success response
   end
 
   def test_nil_state_for_purchase
     @options[:billing_address][:state] = nil
+    response = @gateway.authorize(@amount, @credit_card, @options)
+    assert_success response
+  end
+
+  def test_nil_country_for_purchase
+    @options[:billing_address][:country] = nil
     response = @gateway.authorize(@amount, @credit_card, @options)
     assert_success response
   end
@@ -1390,7 +1462,8 @@ class RemoteAdyenTest < Test::Unit::TestCase
     first_options = options.merge(
       order_id: generate_unique_id,
       shopper_interaction: 'Ecommerce',
-      recurring_processing_model: 'Subscription'
+      recurring_processing_model: 'Subscription',
+      switch_cryptogram_mapping_nt: true
     )
     assert auth = @gateway.authorize(@amount, @apple_pay_card, first_options)
     assert_success auth
@@ -1405,7 +1478,8 @@ class RemoteAdyenTest < Test::Unit::TestCase
       skip_mpi_data: 'Y',
       shopper_interaction: 'ContAuth',
       recurring_processing_model: 'Subscription',
-      network_transaction_id: auth.network_transaction_id
+      network_transaction_id: auth.network_transaction_id,
+      switch_cryptogram_mapping_nt: true
     )
 
     assert purchase = @gateway.purchase(@amount, @apple_pay_card, used_options)
@@ -1483,6 +1557,20 @@ class RemoteAdyenTest < Test::Unit::TestCase
     assert response.test?
     refute response.authorization.blank?
     assert_success response
+  end
+
+  def test_sending_mcc_on_authorize
+    options = {
+      reference: '345123',
+      email: 'john.smith@test.com',
+      ip: '77.110.174.153',
+      shopper_reference: 'John Smith',
+      order_id: '123',
+      mcc: '5411'
+    }
+    response = @gateway.authorize(@amount, @credit_card, options)
+    assert_failure response
+    assert_equal 'Could not find an acquirer account for the provided currency (USD).', response.message
   end
 
   def test_successful_authorize_with_level_2_data
@@ -1596,6 +1684,38 @@ class RemoteAdyenTest < Test::Unit::TestCase
     assert_equal '[capture-received]', response.message
   end
 
+  def test_succesful_purchase_with_airline_data_with_legs
+    airline_data = {
+      agency_invoice_number: 'BAC123',
+      agency_plan_name: 'plan name',
+      airline_code: '434234',
+      airline_designator_code: '1234',
+      boarding_fee: '100',
+      computerized_reservation_system: 'abcd',
+      customer_reference_number: 'asdf1234',
+      document_type: 'cc',
+      flight_date: '2023-09-08',
+      ticket_issue_address: 'abcqwer',
+      ticket_number: 'ABCASDF',
+      travel_agency_code: 'ASDF',
+      travel_agency_name: 'hopper',
+      passenger_name: 'Joe Doe',
+      legs: [{
+        carrier_code: 'KL',
+        class_of_travel: 'F'
+      }],
+      passenger: {
+        first_name: 'Joe',
+        last_name: 'Doe',
+        telephone_number: '432211111'
+      }
+    }
+
+    response = @gateway.purchase(@amount, @credit_card, @options.merge(additional_data_airline: airline_data))
+    assert_success response
+    assert_equal '[capture-received]', response.message
+  end
+
   def test_succesful_purchase_with_lodging_data
     lodging_data = {
       check_in_date: '20230822',
@@ -1685,6 +1805,19 @@ class RemoteAdyenTest < Test::Unit::TestCase
       zip: 'DE45 1PP'
     }
     response = @gateway.purchase(@amount, @credit_card, @options.merge(billing_address: address, address_override: true))
+    assert_success response
+    assert_equal '[capture-received]', response.message
+  end
+
+  def test_successful_purchase_with_metadata
+    metadata = {
+      field_one: 'A',
+      field_two: 'B',
+      field_three: 'C',
+      field_four: 'EASY AS ONE TWO THREE'
+    }
+
+    response = @gateway.purchase(@amount, @credit_card, @options.merge(metadata: metadata))
     assert_success response
     assert_equal '[capture-received]', response.message
   end

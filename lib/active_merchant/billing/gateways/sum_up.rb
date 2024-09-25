@@ -29,15 +29,9 @@ module ActiveMerchant #:nodoc:
         end
       end
 
-      def void(authorization, options = {})
-        checkout_id = authorization.split('#')[0]
-        commit('checkouts/' + checkout_id, {}, :delete)
-      end
-
       def refund(money, authorization, options = {})
-        transaction_id = authorization.split('#')[-1]
-        payment_currency = options[:currency] || currency(money)
-        post = money ? { amount: localized_amount(money, payment_currency) } : {}
+        transaction_id = authorization.split('#').last
+        post = money ? { amount: amount(money) } : {}
         add_merchant_data(post, options)
 
         commit('me/refund/' + transaction_id, post)
@@ -64,6 +58,7 @@ module ActiveMerchant #:nodoc:
         add_invoice(post, money, options)
         add_address(post, options)
         add_customer_data(post, payment, options)
+        add_3ds_data(post, options)
 
         commit('checkouts', post)
       end
@@ -106,10 +101,9 @@ module ActiveMerchant #:nodoc:
       end
 
       def add_invoice(post, money, options)
-        payment_currency = options[:currency] || currency(money)
-        post[:checkout_reference] = options[:order_id]
-        post[:amount]             = localized_amount(money, payment_currency)
-        post[:currency]           = payment_currency
+        post[:checkout_reference] = options[:partner_id] && options[:order_id] ? "#{options[:partner_id]}-#{options[:order_id]}" : options[:order_id]
+        post[:amount]             = amount(money)
+        post[:currency]           = options[:currency] || currency(money)
         post[:description]        = options[:description]
       end
 
@@ -125,31 +119,37 @@ module ActiveMerchant #:nodoc:
         }
       end
 
+      def add_3ds_data(post, options)
+        post[:redirect_url] = options[:redirect_url] if options[:redirect_url]
+      end
+
       def commit(action, post, method = :post)
         response = api_request(action, post.compact, method)
+        succeeded = success_from(response)
 
         Response.new(
-          success_from(response),
-          message_from(response),
-          response,
+          succeeded,
+          message_from(succeeded, response),
+          action.include?('refund') ? { response_code: response.to_s } : response,
           authorization: authorization_from(response),
           test: test?,
-          error_code: error_code_from(response)
+          error_code: error_code_from(succeeded, response)
         )
       end
 
       def api_request(action, post, method)
-        begin
-          raw_response = ssl_request(method, live_url + action, post.to_json, auth_headers)
-        rescue ResponseError => e
-          raw_response = e.response.body
-        end
-
+        raw_response =
+          begin
+            ssl_request(method, live_url + action, post.to_json, auth_headers)
+          rescue ResponseError => e
+            e.response.body
+          end
         response = parse(raw_response)
-        # Multiple invalid parameters
-        response = format_multiple_errors(response) if raw_response.include?('error_code') && response.is_a?(Array)
+        response = response.is_a?(Hash) ? response.symbolize_keys : response
 
-        return response.symbolize_keys
+        return format_errors(response) if raw_response.include?('error_code') && response.is_a?(Array)
+
+        response
       end
 
       def parse(body)
@@ -157,22 +157,25 @@ module ActiveMerchant #:nodoc:
       end
 
       def success_from(response)
-        return false unless %w(PENDING EXPIRED PAID).include?(response[:status])
-
-        response[:transactions].each do |transaction|
-          return false unless %w(PENDING CANCELLED SUCCESSFUL).include?(transaction.symbolize_keys[:status])
-        end
-
-        true
+        (response.is_a?(Hash) && response[:next_step]) ||
+          response == 204 ||
+          %w(PENDING PAID).include?(response[:status]) ||
+          response[:transactions]&.all? { |transaction| transaction.symbolize_keys[:status] == 'SUCCESSFUL' }
       end
 
-      def message_from(response)
-        return response[:status] if success_from(response)
+      def message_from(succeeded, response)
+        if succeeded
+          return 'Succeeded' if (response.is_a?(Hash) && response[:next_step]) || response == 204
 
-        response[:message] || response[:error_message]
+          return response[:status]
+        end
+
+        response[:message] || response[:error_message] || response[:status]
       end
 
       def authorization_from(response)
+        return nil if response.is_a?(Integer)
+
         return response[:id] unless response[:transaction_id]
 
         [response[:id], response[:transaction_id]].join('#')
@@ -185,20 +188,35 @@ module ActiveMerchant #:nodoc:
         }
       end
 
-      def error_code_from(response)
-        response[:error_code] unless success_from(response)
+      def error_code_from(succeeded, response)
+        response[:error_code] unless succeeded
       end
 
-      def format_multiple_errors(responses)
-        errors = responses.map do |response|
-          { error_code: response['error_code'], param: response['param'] }
-        end
-
+      def format_error(error, key)
         {
+          :error_code => error['error_code'],
+          key => error['param']
+        }
+      end
+
+      def format_errors(errors)
+        return format_error(errors.first, :message) if errors.size == 1
+
+        return {
           error_code: STANDARD_ERROR_CODE_MAPPING[:multiple_invalid_parameters],
           message: 'Validation error',
-          errors: errors
+          errors: errors.map { |error| format_error(error, :param) }
         }
+      end
+
+      def handle_response(response)
+        case response.code.to_i
+        # to get the response code (204) when the body is nil
+        when 200...300
+          response.body || response.code
+        else
+          raise ResponseError.new(response)
+        end
       end
     end
   end
