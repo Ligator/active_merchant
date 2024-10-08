@@ -168,6 +168,10 @@ module ActiveMerchant #:nodoc:
         post[:location_id] = options[:location_id] if options[:location_id].present?
       end
 
+      def add_verification_token(post, options)
+        post[:verification_token] = options[:verification_token] if options[:verification_token].present?
+      end
+
       def create_post_for_auth_or_purchase(money, payment, options)
         post = {}
 
@@ -175,6 +179,7 @@ module ActiveMerchant #:nodoc:
         post[:customer_id] = options[:customer] unless options[:customer].nil? || options[:customer].blank?
 
         add_idempotency_key(post, options)
+        add_verification_token(post, options)
         add_amount(post, money, options)
         add_application_fee(post, options[:application_fee], options)
         add_details(post, options)

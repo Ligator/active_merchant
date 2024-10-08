@@ -33,7 +33,6 @@ module ActiveMerchant #:nodoc:
         post = {}
         post[:capture] = false
         build_auth_or_purchase(post, amount, payment_method, options)
-
         options[:incremental_authorization] ? commit(:incremental_authorize, post, options, options[:incremental_authorization]) : commit(:authorize, post, options)
       end
 
