@@ -229,7 +229,7 @@ class Shift4Test < Test::Unit::TestCase
     end.check_request do |_endpoint, data, _headers|
       request = JSON.parse(data)
       assert_equal request['card']['present'], 'N'
-      assert_equal request['card']['expirationDate'], '0924'
+      assert_equal request['card']['expirationDate'], @credit_card.expiry_date.expiration.strftime('%m%y')
       assert_nil request['card']['entryMode']
       assert_nil request['customer']
     end.respond_with(successful_refund_response)
@@ -245,9 +245,13 @@ class Shift4Test < Test::Unit::TestCase
 
   def test_failed_purchase
     @gateway.expects(:ssl_request).returns(failed_purchase_response)
+    response = @gateway.purchase(@amount, @credit_card, @options)
 
-    response = @gateway.purchase(@amount, 'abc', @options)
     assert_failure response
+    assert_equal response.message, 'Transaction declined'
+    assert_equal 'D', response.error_code
+    assert_equal 'A', response.avs_result['code']
+    assert_equal 'Street address matches, but postal code does not match.', response.avs_result['message']
     assert_nil response.authorization
   end
 
@@ -257,6 +261,41 @@ class Shift4Test < Test::Unit::TestCase
     response = @gateway.authorize(@amount, @credit_card, @options)
     assert_failure response
     assert_nil response.authorization
+    assert_equal 'GTV Msg: ERROR{0} 20018: no default category found, UC, Mod10=N TOKEN01CE ENGINE29CE', response.message
+    assert_equal 9100, response.error_code
+    assert response.test?
+  end
+
+  def test_failed_authorize_with_host_response
+    response = stub_comms do
+      @gateway.authorize(@amount, @credit_card)
+    end.respond_with(failed_authorize_with_host_response)
+
+    assert_failure response
+    assert_equal 'CVV value N not accepted.', response.message
+    assert_equal 'N7', response.error_code
+    assert response.test?
+  end
+
+  def test_failed_authorize_with_alternate_host_response
+    response = stub_comms do
+      @gateway.authorize(@amount, @credit_card)
+    end.respond_with(failed_authorize_with_alternate_host_response)
+
+    assert_failure response
+    assert_equal 'Invalid Merchant', response.message
+    assert_equal '03', response.error_code
+    assert response.test?
+  end
+
+  def test_successful_authorize_with_avs_result
+    response = stub_comms do
+      @gateway.authorize(@amount, @credit_card)
+    end.respond_with(successful_authorize_response)
+
+    assert_success response
+    assert_equal 'Y', response.avs_result['code']
+    assert_equal 'Street address and 5-digit postal code match.', response.avs_result['message']
     assert response.test?
   end
 
@@ -266,15 +305,18 @@ class Shift4Test < Test::Unit::TestCase
     response = @gateway.capture(@amount, 'abc', @options)
     assert_failure response
     assert_nil response.authorization
+    assert_equal 'INTERNET FAILURE:  Timeout waiting for response across the Internet UTGAPI05CE', response.message
+    assert_equal 9961, response.error_code
     assert response.test?
   end
 
   def test_failed_refund
     @gateway.expects(:ssl_request).returns(failed_refund_response)
 
-    response = @gateway.refund(@amount, 'abc', @options)
+    response = @gateway.refund(1919, @credit_card, @options)
     assert_failure response
-    assert_nil response.authorization
+    assert_equal response.error_code, 'D'
+    assert_equal response.message, 'Transaction declined'
     assert response.test?
   end
 
@@ -284,6 +326,8 @@ class Shift4Test < Test::Unit::TestCase
     response = @gateway.void('', @options)
     assert_failure response
     assert_nil response.authorization
+    assert_equal 'Invoice Not Found 00000000kl 0008628968  ENGINE29CE', response.message
+    assert_equal 9815, response.error_code
     assert response.test?
   end
 
@@ -624,6 +668,12 @@ class Shift4Test < Test::Unit::TestCase
                 "transaction": {
                     "authorizationCode": "OK168Z",
                     "authSource": "E",
+                    "avs": {
+                      "postalCodeVerified":"Y",
+                      "result":"Y",
+                      "streetVerified":"Y",
+                      "valid":"Y"
+                      },
                     "invoice": "3333333309",
                     "purchaseCard": {
                         "customerReference": "457",
@@ -920,18 +970,78 @@ class Shift4Test < Test::Unit::TestCase
   def failed_purchase_response
     <<-RESPONSE
       {
-          "result": [
-              {
-                  "error": {
-                      "longText": "Token contains invalid characters UTGAPI08CE",
-                      "primaryCode": 9864,
-                      "shortText": "Invalid Token"
-                  },
-                  "server": {
-                      "name": "UTGAPI08CE"
-                  }
+        "result": [
+          {
+            "dateTime":"2024-01-12T15:11:10.000-08:00",
+            "receiptColumns":30,
+            "amount": {
+              "total":15000000
+            },
+            "card": {
+              "type":"VS",
+              "entryMode":"M",
+              "number":"XXXXXXXXXXXX2224",
+              "present":"N",
+              "securityCode": {
+                "result":"M",
+                "valid":"Y"
+              },
+              "token": {
+                "value":"2224028jbvt7g0ne"
               }
-          ]
+            },
+            "clerk": {
+              "numericId":1
+            },
+            "customer": {
+              "firstName":"John",
+              "lastName":"Smith"
+            },
+            "device": {
+              "capability": {
+                "magstripe":"Y",
+                "manualEntry":"Y"
+              }
+            },
+            "merchant": {
+              "mid":8628968,
+              "name":"Spreedly - ECom"
+            },
+            "receipt": [
+              {
+                "key":"MaskedPAN",
+                "printValue":"XXXXXXXXXXXX2224"
+              },
+              {
+                "key":"CardEntryMode",
+                "printName":"ENTRY METHOD",
+                "printValue":"KEYED"
+              },
+              {
+                "key":"SignatureRequired",
+                "printValue":"N"
+              }
+            ],
+            "server": {
+              "name":"UTGAPI11CE"
+            },
+            "transaction": {
+              "authSource":"E",
+              "avs": {
+                "postalCodeVerified":"N",
+                "result":"A",
+                "streetVerified":"Y",
+                "valid":"Y"
+                },
+              "invoice":"0705626580",
+              "responseCode":"D",
+              "saleFlag":"S"
+            },
+            "universalToken": {
+              "value":"400010-2F1AA405-001AA4-000026B7-1766C44E9E8"
+            }
+          }
+        ]
       }
     RESPONSE
   end
@@ -958,19 +1068,68 @@ class Shift4Test < Test::Unit::TestCase
   def failed_refund_response
     <<-RESPONSE
       {
-          "result": [
-              {
-                  "error": {
-                      "longText": "record not posted ENGINE21CE",
-                      "primaryCode": 9844,
-                      "shortText": "I/O ERROR"
-                  },
-                  "server": {
-                      "name": "UTGAPI05CE"
-                  }
-              }
+        "result":
+          [
+            {
+              "dateTime": "2024-01-05T13:38:03.000-08:00",
+              "receiptColumns": 30,
+              "amount": {
+                "total": 19.19
+              },
+              "card": {
+                "type": "VS",
+                "entryMode": "M",
+                "number": "XXXXXXXXXXXX2224",
+                "present": "N",
+                "token": {
+                  "value": "2224htm77ctttszk"
+                }
+              },
+              "clerk": {
+                "numericId": 1
+              },
+              "device": {
+                "capability": {
+                  "magstripe": "Y",
+                  "manualEntry": "Y"
+                }
+              },
+              "merchant": {
+                "name": "Spreedly - ECom"
+              },
+              "receipt": [
+                {
+                  "key": "MaskedPAN",
+                  "printValue": "XXXXXXXXXXXX2224"
+                },
+                {
+                  "key": "CardEntryMode",
+                  "printName": "ENTRY METHOD",
+                  "printValue": "KEYED"
+                },
+                {
+                  "key": "SignatureRequired",
+                  "printValue": "N"
+                }
+              ],
+              "server":
+                {
+                  "name": "UTGAPI04CE"
+                },
+              "transaction":
+                {
+                  "authSource": "E",
+                  "invoice": "0704283292",
+                  "responseCode": "D",
+                  "saleFlag": "C"
+                },
+              "universalToken":
+                {
+                  "value": "400010-2F1AA405-001AA4-000026B7-1766C44E9E8"
+                }
+            }
           ]
-      }
+        }
     RESPONSE
   end
 
@@ -1063,6 +1222,171 @@ class Shift4Test < Test::Unit::TestCase
           {
             "credential": {
               "accessToken": "abc123"
+            }
+          }
+        ]
+      }
+    RESPONSE
+  end
+
+  def failed_authorize_with_host_response
+    <<-RESPONSE
+     {
+      "result": [
+        {
+          "dateTime": "2022-09-16T01:40:51.000-07:00",
+          "card": {
+            "type": "VS",
+            "entryMode": "M",
+            "number": "XXXXXXXXXXXX2224",
+            "present": "N",
+            "securityCode": {
+              "result": "M",
+              "valid": "Y"
+            },
+            "token": {
+              "value": "2224xzsetmjksx13"
+            }
+          },
+          "customer": {
+            "firstName": "John",
+            "lastName": "Smith"
+          },
+          "device": {
+            "capability": {
+              "magstripe": "Y",
+              "manualEntry": "Y"
+            }
+          },
+          "merchant": {
+            "name": "Spreedly - ECom"
+          },
+          "server": {
+            "name": "UTGAPI12CE"
+          },
+          "transaction": {
+            "authSource":"E",
+            "avs": {
+              "postalCodeVerified":"Y",
+              "result":"Y",
+              "streetVerified":"Y",
+              "valid":"Y"
+              },
+            "cardOnFile": {
+              "transactionId":"010512168564062",
+              "indicator":"01",
+              "scheduledIndicator":"02",
+              "usageIndicator":"01"
+              },
+            "invoice":"0704938459384",
+            "hostResponse": {
+              "reasonCode":"N7",
+              "reasonDescription":"CVV value N not accepted."
+              },
+            "responseCode":"D",
+            "retrievalReference":"400500170391",
+            "saleFlag":"S",
+            "vendorReference":"2490464558001"
+          },
+          "universalToken": {
+            "value": "400010-2F1AA405-001AA4-000026B7-1766C44E9E8"
+          }
+        }
+      ]
+     }
+    RESPONSE
+  end
+
+  def failed_authorize_with_alternate_host_response
+    <<~RESPONSE
+      {
+        "result": [
+          {
+            "dateTime": "2024-09-06T12:46:05.000-07:00",
+            "receiptColumns": 30,
+            "correlationId": "A6D33AD9-29BE-44A3-B6B4-8FC6354A0514",
+            "amount": {
+              "total": 2118.37
+            },
+            "card": {
+              "type": "VS",
+              "entryMode": "M",
+              "number": "[FILTERED]",
+              "present": "N",
+              "token": {
+                "value": "657492f6d9cx5qmf"
+              }
+            },
+            "clerk": {
+              "numericId": 1
+            },
+            "customer": {
+              "addressLine1": "13238 N 101st Pl",
+              "emailAddress": "howardholleb@everonsolutions.com",
+              "firstName": "[FILTERED]",
+              "lastName": "[FILTERED]",
+              "postalCode": "85260"
+            },
+            "device": {
+              "capability": {
+                "magstripe": "Y",
+                "manualEntry": "Y"
+              }
+            },
+            "merchant": {
+              "mid": 8723645,
+              "name": "NEW CARDINALS STADIUM"
+            },
+            "receipt": [
+              {
+                "key": "MaskedPAN",
+                "printValue": "XXXXXXXXXXXX6574"
+              },
+              {
+                "key": "CardEntryMode",
+                "printName": "ENTRY METHOD",
+                "printValue": "KEYED"
+              },
+              {
+                "key": "SignatureRequired",
+                "printValue": "N"
+              },
+              {
+                "key": "TerminalID",
+                "printName": "TID",
+                "printValue": "78084447"
+              }
+            ],
+            "server": {
+              "name": "UTGAPI04S7"
+            },
+            "transaction": {
+              "authSource": "E",
+              "HEY": "WHOA",
+              "avs": {
+                "postalCodeVerified": "Y",
+                "result": "Y",
+                "streetVerified": "Y",
+                "valid": "Y"
+              },
+              "cardOnFile": {
+                "indicator": "01",
+                "scheduledIndicator": "02",
+                "usageIndicator": "01"
+              },
+              "invoice": "0725417280",
+              "hostresponse": {
+                "reasonCode": "03",
+                "reattemptPermission": "Reattempt permitted 15 times in 30 days",
+                "reasonDescription": "Invalid Merchant"
+              },
+              "responseCode": "D",
+              "retrievalReference": "425019365998",
+              "saleFlag": "S",
+              "vendorReference": "19026022674001"
+            },
+            "universalToken": {
+              "value": "480709-62ADAB16-000B58-00004E9E-191C7407826"
             }
           }
         ]

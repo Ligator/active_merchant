@@ -1,6 +1,8 @@
 require 'test_helper'
 
 class SumUpTest < Test::Unit::TestCase
+  include CommStub
+
   def setup
     @gateway = SumUpGateway.new(
       access_token: 'sup_sk_ABC123',
@@ -12,7 +14,9 @@ class SumUpTest < Test::Unit::TestCase
     @options = {
       payment_type: 'card',
       billing_address: address,
-      description: 'Store Purchase'
+      description: 'Store Purchase',
+      partner_id: 'PartnerId',
+      order_id: SecureRandom.uuid
     }
   end
 
@@ -28,6 +32,29 @@ class SumUpTest < Test::Unit::TestCase
     assert response.test?
   end
 
+  def test_successful_purchase_with_options
+    stub_comms(@gateway, :ssl_request) do
+      @gateway.purchase(@amount, @credit_card, @options)
+    end.check_request do |_method, _endpoint, data, _headers|
+      json_data = JSON.parse(data)
+      if checkout_ref = json_data['checkout_reference']
+        assert_match /#{@options[:partner_id]}-#{@options[:order_id]}/, checkout_ref
+      end
+    end.respond_with(successful_create_checkout_response)
+  end
+
+  def test_successful_purchase_without_partner_id
+    @options.delete(:partner_id)
+    stub_comms(@gateway, :ssl_request) do
+      @gateway.purchase(@amount, @credit_card, @options)
+    end.check_request do |_method, _endpoint, data, _headers|
+      json_data = JSON.parse(data)
+      if checkout_ref = json_data['checkout_reference']
+        assert_match /#{@options[:order_id]}/, checkout_ref
+      end
+    end.respond_with(successful_create_checkout_response)
+  end
+
   def test_failed_purchase
     @gateway.expects(:ssl_request).returns(failed_complete_checkout_array_response)
     response = @gateway.purchase(@amount, @credit_card, @options)
@@ -35,21 +62,6 @@ class SumUpTest < Test::Unit::TestCase
     assert_failure response
 
     assert_equal SumUpGateway::STANDARD_ERROR_CODE_MAPPING[:multiple_invalid_parameters], response.error_code
-  end
-
-  def test_successful_void
-    @gateway.expects(:ssl_request).returns(successful_void_response)
-    response = @gateway.void('c0887be5-9fd2-4018-a531-e573e0298fdd')
-    assert_success response
-    assert_equal 'EXPIRED', response.message
-  end
-
-  def test_failed_void
-    @gateway.expects(:ssl_request).returns(failed_void_response)
-    response = @gateway.void('c0887be5-9fd2-4018-a531-e573e0298fdd22')
-    assert_failure response
-    assert_equal 'Resource not found', response.message
-    assert_equal 'NOT_FOUND', response.error_code
   end
 
   def test_failed_refund
@@ -73,7 +85,7 @@ class SumUpTest < Test::Unit::TestCase
 
   def test_message_from
     response = @gateway.send(:parse, successful_complete_checkout_response)
-    message_from = @gateway.send(:message_from, response.symbolize_keys)
+    message_from = @gateway.send(:message_from, true, response.symbolize_keys)
     assert_equal 'PENDING', message_from
   end
 
@@ -83,15 +95,15 @@ class SumUpTest < Test::Unit::TestCase
     assert_equal '8d8336a1-32e2-4f96-820a-5c9ee47e76fc', authorization_from
   end
 
-  def test_format_multiple_errors
+  def test_format_errors
     responses = @gateway.send(:parse, failed_complete_checkout_array_response)
-    error_code = @gateway.send(:format_multiple_errors, responses)
-    assert_equal format_multiple_errors_response, error_code
+    error_code = @gateway.send(:format_errors, responses)
+    assert_equal format_errors_response, error_code
   end
 
   def test_error_code_from
     response = @gateway.send(:parse, failed_complete_checkout_response)
-    error_code_from = @gateway.send(:error_code_from, response.symbolize_keys)
+    error_code_from = @gateway.send(:error_code_from, false, response.symbolize_keys)
     assert_equal 'CHECKOUT_SESSION_IS_EXPIRED', error_code_from
   end
 
@@ -422,56 +434,13 @@ class SumUpTest < Test::Unit::TestCase
         "message": "Validation error",
         "param": "card",
         "error_code": "The card is expired"
+      },
+      {
+        "message": "Validation error",
+        "param": "card",
+        "error_code": "The value located under the \'$.card.number\' path is not a valid card number"
       }
     ]
-    RESPONSE
-  end
-
-  def successful_void_response
-    <<-RESPONSE
-    {
-      "checkout_reference": "b5a47552-50e0-4c6e-af23-2495124b5091",
-      "id": "c0887be5-9fd2-4018-a531-e573e0298fdd",
-      "amount": 100.00,
-      "currency": "USD",
-      "pay_to_email": "integrations@spreedly.com",
-      "merchant_code": "MTVU2XGK",
-      "description": "Sample one-time payment",
-      "purpose": "CHECKOUT",
-      "status": "EXPIRED",
-      "date": "2023-09-14T16:32:39.200+00:00",
-      "valid_until": "2023-09-14T18:08:49.977+00:00",
-      "merchant_name": "Spreedly",
-      "transactions": [{
-        "id": "fc805fc9-4864-4c6d-8e29-630c171fce54",
-        "transaction_code": "TDYEQ2RQ23",
-        "merchant_code": "MTVU2XGK",
-        "amount": 100.0,
-        "vat_amount": 0.0,
-        "tip_amount": 0.0,
-        "currency": "USD",
-        "timestamp": "2023-09-14T16:32:50.111+00:00",
-        "status": "CANCELLED",
-        "payment_type": "ECOM",
-        "entry_mode": "CUSTOMER_ENTRY",
-        "installments_count": 1,
-        "internal_id": 5165839144
-      }]
-    }
-    RESPONSE
-  end
-
-  def failed_void_response
-    <<-RESPONSE
-    {
-      "type": "https://developer.sumup.com/docs/problem/checkout-not-found/",
-      "title": "Not Found",
-      "status": 404,
-      "detail": "A checkout session with the id c0887be5-9fd2-4018-a531-e573e0298fdd22 does not exist",
-      "instance": "5e07254b2f25, 5e07254b2f25 a30463b627e3",
-      "error_code": "NOT_FOUND",
-      "message": "Resource not found"
-    }
     RESPONSE
   end
 
@@ -484,11 +453,11 @@ class SumUpTest < Test::Unit::TestCase
     RESPONSE
   end
 
-  def format_multiple_errors_response
+  def format_errors_response
     {
       error_code: 'MULTIPLE_INVALID_PARAMETERS',
       message: 'Validation error',
-      errors: [{ error_code: 'The card is expired', param: 'card' }]
+      errors: [{ error_code: 'The card is expired', param: 'card' }, { error_code: "The value located under the '$.card.number' path is not a valid card number", param: 'card' }]
     }
   end
 end

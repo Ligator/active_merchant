@@ -94,6 +94,21 @@ class SafeChargeTest < Test::Unit::TestCase
     assert purchase.test?
   end
 
+  def test_successful_purchase_with_card_holder_verification
+    purchase = stub_comms do
+      @gateway.purchase(@amount, @credit_card, @options.merge(middle_name: 'middle', card_holder_verification: 1))
+    end.check_request do |_endpoint, data, _headers|
+      assert_match(/sg_middleName=middle/, data)
+      assert_match(/sg_doCardHolderNameVerification=1/, data)
+    end.respond_with(successful_purchase_response)
+
+    assert_success purchase
+    assert_equal '111951|101508189567|ZQBpAFAASABGAHAAVgBPAFUAMABiADMAewBtAGsAd' \
+                 'AAvAFIAQQBrAGoAYwBxACoAXABHAEEAOgA3ACsAMgA4AD0AOABDAG4AbQAzAF' \
+                 'UAbQBYAFIAMwA=|%02d|%d|1.00|USD' % [@credit_card.month, @credit_card.year.to_s[-2..-1]], purchase.authorization
+    assert purchase.test?
+  end
+
   def test_successful_purchase_with_falsey_stored_credential_mode
     purchase = stub_comms do
       @gateway.purchase(@amount, @credit_card, @options.merge(stored_credential_mode: false))
@@ -106,6 +121,25 @@ class SafeChargeTest < Test::Unit::TestCase
                  'AAvAFIAQQBrAGoAYwBxACoAXABHAEEAOgA3ACsAMgA4AD0AOABDAG4AbQAzAF' \
                  'UAbQBYAFIAMwA=|%02d|%d|1.00|USD' % [@credit_card.month, @credit_card.year.to_s[-2..-1]], purchase.authorization
     assert purchase.test?
+  end
+
+  def test_successful_purchase_with_token
+    response = stub_comms do
+      @gateway.purchase(@amount, @credit_card, @options)
+    end.respond_with(successful_purchase_response)
+    assert_success response
+    assert_equal 'Success', response.message
+
+    _, transaction_id = response.authorization.split('|')
+    subsequent_response = stub_comms do
+      @gateway.purchase(@amount, response.authorization, @options)
+    end.check_request do |_endpoint, data, _headers|
+      assert_match(/sg_CCToken/, data)
+      assert_match(/sg_TransactionID=#{transaction_id}/, data)
+    end.respond_with(successful_purchase_response)
+
+    assert_success subsequent_response
+    assert_equal 'Success', subsequent_response.message
   end
 
   def test_failed_purchase
@@ -221,6 +255,26 @@ class SafeChargeTest < Test::Unit::TestCase
     end.respond_with(successful_refund_response)
 
     assert_success refund
+  end
+
+  def test_successful_credit_with_unreferenced_refund
+    credit = stub_comms do
+      @gateway.credit(@amount, @credit_card, @options.merge(unreferenced_refund: true))
+    end.check_request do |_endpoint, data, _headers|
+      assert_equal(data.split('&').include?('sg_CreditType=2'), true)
+    end.respond_with(successful_credit_response)
+
+    assert_success credit
+  end
+
+  def test_successful_credit_without_unreferenced_refund
+    credit = stub_comms do
+      @gateway.credit(@amount, @credit_card, @options)
+    end.check_request do |_endpoint, data, _headers|
+      assert_equal(data.split('&').include?('sg_CreditType=1'), true)
+    end.respond_with(successful_credit_response)
+
+    assert_success credit
   end
 
   def test_failed_refund

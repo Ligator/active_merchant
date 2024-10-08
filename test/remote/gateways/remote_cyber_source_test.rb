@@ -57,13 +57,31 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
       '4111111111111111',
       brand: 'visa',
       eci: '05',
-      payment_cryptogram: 'EHuWW9PiBkWvqE5juRwDzAUFBAk='
+      payment_cryptogram: 'EHuWW9PiBkWvqE5juRwDzAUFBAk=',
+      source: :network_token
     )
     @amex_network_token = network_tokenization_credit_card(
       '378282246310005',
       brand: 'american_express',
       eci: '05',
-      payment_cryptogram: 'EHuWW9PiBkWvqE5juRwDzAUFBAk='
+      payment_cryptogram: 'EHuWW9PiBkWvqE5juRwDzAUFBAk=',
+      source: :network_token
+    )
+
+    @mastercard_network_token = network_tokenization_credit_card(
+      '5555555555554444',
+      brand: 'master',
+      eci: '05',
+      payment_cryptogram: 'EHuWW9PiBkWvqE5juRwDzAUFBAk=',
+      source: :network_token
+    )
+
+    @carnet_credit_card = credit_card(
+      '5062280000000002',
+      verification_value: '321',
+      month: '12',
+      year: (Time.now.year + 2).to_s,
+      brand: :carnet
     )
 
     @amount = 100
@@ -86,6 +104,10 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
       ignore_cvv: 'true',
       commerce_indicator: 'internet',
       user_po: 'ABC123',
+      merchant_descriptor_country: 'US',
+      merchant_descriptor_state: 'NY',
+      merchant_descriptor_city: 'test123',
+      submerchant_id: 'AVSBSGDHJMNGFR',
       taxable: true,
       sales_slip_number: '456',
       airline_agent_code: '7Q',
@@ -94,6 +116,7 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
       original_amount: '4',
       reference_data_code: 'ABC123',
       invoice_number: '123',
+      first_recurring_payment: true,
       mobile_remote_payment_type: 'A1',
       vat_tax_rate: '1'
     }
@@ -118,6 +141,8 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
     + '1111111115555555222233101abcdefghijkl7777777777777777777777777promotionCde'
   end
 
+  # Scrubbing is working but may fail at the @credit_card.verification_value assertion
+  # if the the 3 digits are showing up in the Cybersource requestID
   def test_transcript_scrubbing
     transcript = capture_transcript(@gateway) do
       @gateway.purchase(@amount, @credit_card, @options)
@@ -153,6 +178,13 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
     assert !response.authorization.blank?
   end
 
+  def test_successful_authorization_with_aggregator_id
+    options = @options.merge(aggregator_id: 'ABCDE')
+    assert response = @gateway.authorize(@amount, @credit_card, options)
+    assert_successful_response(response)
+    assert !response.authorization.blank?
+  end
+
   def test_successful_authorize_with_solution_id
     ActiveMerchant::Billing::CyberSourceGateway.application_id = 'A1000000'
     assert response = @gateway.authorize(@amount, @credit_card, @options)
@@ -172,7 +204,7 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
     }
     @options[:commerce_indicator] = 'internet'
 
-    assert response = @gateway.authorize(@amount, @credit_card, @options)
+    assert response = @gateway.authorize(@amount, @master_credit_card, @options)
     assert_successful_response(response)
     assert !response.authorization.blank?
   ensure
@@ -266,6 +298,38 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
     options = @options.merge(merchant_tax_id: '123')
     assert response = @gateway.authorize(@amount, @credit_card, options)
     assert_successful_response(response)
+  end
+
+  def test_successful_auth_with_single_element_from_other_tax
+    options = @options.merge(vat_tax_rate: '1')
+
+    assert response = @gateway.authorize(@amount, @master_credit_card, options)
+    assert_successful_response(response)
+    assert !response.authorization.blank?
+  end
+
+  def test_successful_purchase_with_single_element_from_other_tax
+    options = @options.merge(national_tax_amount: '0.05')
+
+    assert response = @gateway.purchase(@amount, @master_credit_card, options)
+    assert_successful_response(response)
+    assert !response.authorization.blank?
+  end
+
+  def test_successful_auth_with_gratuity_amount
+    options = @options.merge(gratuity_amount: '7.50')
+
+    assert response = @gateway.authorize(@amount, @master_credit_card, options)
+    assert_successful_response(response)
+    assert !response.authorization.blank?
+  end
+
+  def test_successful_purchase_with_gratuity_amount
+    options = @options.merge(gratuity_amount: '7.50')
+
+    assert response = @gateway.purchase(@amount, @master_credit_card, options)
+    assert_successful_response(response)
+    assert !response.authorization.blank?
   end
 
   def test_successful_authorization_with_sales_slip_number
@@ -385,6 +449,12 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
     assert_successful_response(response)
   end
 
+  def test_successful_purchase_with_carnet_card
+    assert response = @gateway.purchase(@amount, @carnet_credit_card, @options)
+    assert_successful_response(response)
+    assert_equal '002', response.params['cardType']
+  end
+
   def test_successful_purchase_with_bank_account
     bank_account = check({ account_number: '4100', routing_number: '011000015' })
     assert response = @gateway.purchase(10000, bank_account, @options)
@@ -491,6 +561,12 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
     options = @options.merge(reconciliation_id: '1936831')
     assert response = @gateway.purchase(@amount, @credit_card, options)
     assert_successful_response(response)
+  end
+
+  def test_successful_purchase_with_reconciliation_id_2
+    response = @gateway.purchase(@amount, @credit_card, @options)
+    assert_successful_response(response)
+    assert response.params['reconciliationID2']
   end
 
   def test_successful_authorize_with_customer_id
@@ -701,6 +777,14 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
     assert_successful_response(capture)
   end
 
+  def test_network_tokenization_with_mastercard
+    assert auth = @gateway.authorize(@amount, @mastercard_network_token, @options)
+    assert_successful_response(auth)
+
+    assert capture = @gateway.capture(@amount, auth.authorization)
+    assert_successful_response(capture)
+  end
+
   def test_network_tokenization_with_amex_cc_longer_cryptogram
     # Generate a random 40 bytes binary amex cryptogram => Base64.encode64(Random.bytes(40))
     long_cryptogram = "NZwc40C4eTDWHVDXPekFaKkNYGk26w+GYDZmU50cATbjqOpNxR/eYA==\n"
@@ -754,6 +838,33 @@ class RemoteCyberSourceTest < Test::Unit::TestCase
 
     assert auth = @gateway.purchase(@amount, credit_card, @options)
     assert_successful_response(auth)
+  end
+
+  def test_successful_auth_and_capture_nt_mastercard_with_tax_options_and_no_xml_parsing_errors
+    credit_card = network_tokenization_credit_card('5555555555554444',
+                                                   brand: 'master',
+                                                   eci: '05',
+                                                   payment_cryptogram: 'EHuWW9PiBkWvqE5juRwDzAUFBAk=')
+
+    options = { ignore_avs: true, order_id: generate_unique_id, vat_tax_rate: 1.01 }
+
+    assert auth = @gateway.authorize(@amount, credit_card, options)
+    assert_successful_response(auth)
+
+    assert capture = @gateway.capture(@amount, auth.authorization)
+    assert_successful_response(capture)
+  end
+
+  def test_successful_purchase_nt_mastercard_with_tax_options_and_no_xml_parsing_errors
+    credit_card = network_tokenization_credit_card('5555555555554444',
+                                                   brand: 'master',
+                                                   eci: '05',
+                                                   payment_cryptogram: 'EHuWW9PiBkWvqE5juRwDzAUFBAk=')
+
+    options = { ignore_avs: true, order_id: generate_unique_id, vat_tax_rate: 1.01 }
+
+    assert response = @gateway.purchase(@amount, credit_card, options)
+    assert_successful_response(response)
   end
 
   def test_successful_authorize_with_mdd_fields

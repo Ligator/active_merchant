@@ -7,12 +7,13 @@ module ActiveMerchant #:nodoc:
       self.supported_countries = ['AR']
       self.money_format = :cents
       self.default_currency = 'ARS'
-      self.supported_cardtypes = %i[visa master american_express diners_club naranja cabal]
+      self.supported_cardtypes = %i[visa master american_express diners_club naranja cabal tuya]
 
       self.homepage_url = 'http://www.decidir.com'
       self.display_name = 'Decidir'
 
       STANDARD_ERROR_CODE_MAPPING = {
+        -1 => STANDARD_ERROR_CODE[:processing_error],
         1 => STANDARD_ERROR_CODE[:call_issuer],
         2 => STANDARD_ERROR_CODE[:call_issuer],
         3 => STANDARD_ERROR_CODE[:config_error],
@@ -106,7 +107,9 @@ module ActiveMerchant #:nodoc:
           gsub(%r((apikey: )\w+)i, '\1[FILTERED]').
           gsub(%r((\"card_number\\\":\\\")\d+), '\1[FILTERED]').
           gsub(%r((\"security_code\\\":\\\")\d+), '\1[FILTERED]').
-          gsub(%r((\"emv_issuer_data\\\":\\\")\d+), '\1[FILTERED]')
+          gsub(%r((\"emv_issuer_data\\\":\\\")\d+), '\1[FILTERED]').
+          gsub(%r((\"cryptogram\\\":\\\"/)\w+), '\1[FILTERED]').
+          gsub(%r((\"token_card_data\\\":{.*\\\"token\\\":\\\")\d+), '\1[FILTERED]')
       end
 
       private
@@ -127,6 +130,7 @@ module ActiveMerchant #:nodoc:
         add_payment(post, credit_card, options)
         add_aggregate_data(post, options) if options[:aggregate_data]
         add_sub_payments(post, options)
+        add_customer_data(post, options)
       end
 
       def add_payment_method_id(credit_card, options)
@@ -197,8 +201,11 @@ module ActiveMerchant #:nodoc:
         post[:fraud_detection] ||= {}
         post[:fraud_detection][:sent_to_cs] = false
         post[:card_data][:last_four_digits] = options[:last_4]
+        post[:card_data][:security_code] = payment_method.verification_value if payment_method.verification_value?
 
         post[:token_card_data] = {
+          expiration_month: format(payment_method.month, :two_digits),
+          expiration_year: format(payment_method.year, :two_digits),
           token: payment_method.number,
           eci: payment_method.eci,
           cryptogram: payment_method.payment_cryptogram
@@ -239,6 +246,14 @@ module ActiveMerchant #:nodoc:
         aggregate_data[:merchant_email] = data[:merchant_email] if data[:merchant_email]
         aggregate_data[:merchant_phone] = data[:merchant_phone] if data[:merchant_phone]
         post[:aggregate_data] = aggregate_data
+      end
+
+      def add_customer_data(post, options = {})
+        return unless options[:customer_email] || options[:customer_id]
+
+        post[:customer] = {}
+        post[:customer][:id] = options[:customer_id] if options[:customer_id]
+        post[:customer][:email] = options[:customer_email] if options[:customer_email]
       end
 
       def add_sub_payments(post, options)
@@ -288,7 +303,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def commit(method, endpoint, parameters, options = {})
-        url = "#{(test? ? test_url : live_url)}/#{endpoint}"
+        url = "#{test? ? test_url : live_url}/#{endpoint}"
 
         begin
           raw_response = ssl_request(method, url, post_data(parameters), headers(options))
