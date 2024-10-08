@@ -484,30 +484,6 @@ module ActiveMerchant #:nodoc:
         end
       end
 
-      def add_network_token_data(post_data, payment_method, options)
-        return unless adding_network_token_card_data?(payment_method)
-
-        post_data[:card] ||= {}
-        post_data[:card][:last4] = options[:last_4]
-        post_data[:card][:network_token] = {}
-        post_data[:card][:network_token][:number] = payment_method.number
-        post_data[:card][:network_token][:exp_month] = payment_method.month
-        post_data[:card][:network_token][:exp_year] = payment_method.year
-        post_data[:card][:network_token][:payment_account_reference] = options[:payment_account_reference] if options[:payment_account_reference]
-
-        post_data
-      end
-
-      def add_network_token_cryptogram_and_eci(post, payment_method)
-        return unless adding_network_token_card_data?(payment_method)
-
-        post[:payment_method_options] ||= {}
-        post[:payment_method_options][:card] ||= {}
-        post[:payment_method_options][:card][:network_token] ||= {}
-        post[:payment_method_options][:card][:network_token][:cryptogram] = payment_method.payment_cryptogram if payment_method.payment_cryptogram
-        post[:payment_method_options][:card][:network_token][:electronic_commerce_indicator] = payment_method.eci if payment_method.eci
-      end
-
       def extract_token_from_string_and_maybe_add_customer_id(post, payment_method)
         if payment_method.include?('|')
           customer_id, payment_method = payment_method.split('|')

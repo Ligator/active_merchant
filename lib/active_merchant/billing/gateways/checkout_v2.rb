@@ -548,7 +548,6 @@ module ActiveMerchant #:nodoc:
           raw_response = ssl_request(method, url(action, authorization), post.nil? || post.empty? ? nil : post.to_json, headers(action, options))
           response = parse(raw_response)
           response['id'] = response['_links']['payment']['href'].split('/')[-1] if action == :capture && response.key?('_links')
-          source_id = authorization if action == :unstore
         rescue ResponseError => e
           @options[:access_token] = '' if e.response.code == '401' && !@options[:secret_key]
 
@@ -699,27 +698,6 @@ module ActiveMerchant #:nodoc:
           response_code = response['response_code'] || response.dig('actions', 0, 'response_code')
 
           STANDARD_ERROR_CODE_MAPPING[response_code]
-        end
-      end
-
-      def token_type_from(payment_method)
-        case payment_method.source
-        when :network_token
-          payment_method.brand == 'visa' ? 'vts' : 'mdes'
-        when :google_pay, :android_pay
-          'googlepay'
-        when :apple_pay
-          'applepay'
-        end
-      end
-
-      def handle_response(response)
-        case response.code.to_i
-        # to get the response code after unstore(delete instrument), because the body is nil
-        when 200...300
-          response.body || response.code
-        else
-          raise ResponseError.new(response)
         end
       end
 
