@@ -323,15 +323,6 @@ module ActiveMerchant #:nodoc:
         end
       end
 
-      def inquire_path(authorization, options)
-        if authorization
-          authorization, = authorization.split('|')
-          "payments/#{authorization}"
-        else
-          "payments/search?external_reference=#{options[:order_id] || options[:external_reference]}"
-        end
-      end
-
       def error_code_from(action, response)
         unless success_from(action, response)
           if cause = response['cause']

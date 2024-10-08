@@ -55,21 +55,21 @@ module ActiveMerchant #:nodoc:
         'BAD_REQUEST' => STANDARD_ERROR_CODE[:processing_error]
       }.freeze
 
-      def initialize(options={})
+      def initialize(options = {})
         requires!(options, :access_token)
         @access_token = options[:access_token]
         @fee_currency = options[:fee_currency] || default_currency
         super
       end
 
-      def authorize(money, payment, options={})
+      def authorize(money, payment, options = {})
         post = create_post_for_auth_or_purchase(money, payment, options)
         post[:autocomplete] = false
 
         commit(:post, 'payments', post, options)
       end
 
-      def purchase(money, payment, options={})
+      def purchase(money, payment, options = {})
         post = create_post_for_auth_or_purchase(money, payment, options)
         post[:autocomplete] = true
 
@@ -88,7 +88,7 @@ module ActiveMerchant #:nodoc:
         commit(:post, "payments/#{authorization}/cancel", post, {})
       end
 
-      def refund(money, identification, options={})
+      def refund(money, identification, options = {})
         post = { payment_id: identification }
 
         add_idempotency_key(post, options)
@@ -297,7 +297,7 @@ module ActiveMerchant #:nodoc:
         {
           'Content-Type' => 'application/json',
           'Authorization' => "Bearer #{key}",
-          'Square-Version' => api_version(options),
+          'Square-Version' => api_version(options)
         }
       end
 

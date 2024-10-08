@@ -12,7 +12,7 @@ class RemoteSquareTest < Test::Unit::TestCase
 
     @options = {
       email: 'customer@example.com',
-      billing_address: address(),
+      billing_address: address()
     }
   end
 

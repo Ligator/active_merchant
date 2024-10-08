@@ -965,7 +965,7 @@ module ActiveMerchant
           end
 
         response[:card_type] =
-          if(element = doc.at_xpath('//accountType'))
+          if (element = doc.at_xpath('//accountType'))
             (empty?(element.content) ? nil : element.content)
           end
 
