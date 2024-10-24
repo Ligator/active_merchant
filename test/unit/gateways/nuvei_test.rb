@@ -50,6 +50,28 @@ class NuveiTest < Test::Unit::TestCase
       relatedTransactionId: 'test_related_transaction_id',
       timeStamp: 'test_time_stamp'
     }
+
+    @bank_account = check()
+
+    @apple_pay_card = network_tokenization_credit_card(
+      '5204 2452 5046 0049',
+      payment_cryptogram: 'EHuWW9PiBkWvqE5juRwDzAUFBAk=',
+      month: '12',
+      year: Time.new.year,
+      source: :apple_pay,
+      verification_value: 111,
+      eci: '5'
+    )
+
+    @google_pay_card = network_tokenization_credit_card(
+      '4761209980011439',
+      payment_cryptogram: 'YwAAAAAABaYcCMX/OhNRQAAAAAA=',
+      month: '11',
+      year: '2022',
+      source: :google_pay,
+      verification_value: 111,
+      eci: '5'
+    )
   end
 
   def test_calculate_checksum_authenticate
@@ -205,6 +227,17 @@ class NuveiTest < Test::Unit::TestCase
     end
   end
 
+  def test_successful_partial_approval
+    stub_comms(@gateway, :ssl_request) do
+      @gateway.authorize(55, @credit_card, @options.merge(is_partial_approval: true))
+    end.check_request(skip_response: true) do |_method, endpoint, data, _headers|
+      if /payment/.match?(endpoint)
+        json_data = JSON.parse(data)
+        assert_equal 1, json_data['isPartialApproval']
+      end
+    end
+  end
+
   def test_successful_credit
     stub_comms(@gateway, :ssl_request) do
       @gateway.credit(@amount, @credit_card, @options)
@@ -247,6 +280,57 @@ class NuveiTest < Test::Unit::TestCase
       if /payment/.match?(endpoint)
         json_data = JSON.parse(data)
         assert_match(/RECURRING/, json_data['authenticationOnlyType'])
+      end
+    end.respond_with(successful_purchase_response)
+  end
+
+  def test_successful_authorize_bank_account
+    stub_comms(@gateway, :ssl_request) do
+      @gateway.authorize(1.25, @bank_account, @options)
+    end.check_request(skip_response: true) do |_method, endpoint, data, _headers|
+      json_data = JSON.parse(data)
+      if /payment/.match?(endpoint)
+        assert_equal('apmgw_ACH', json_data['paymentOption']['alternativePaymentMethod']['paymentMethod'])
+        assert_match(/#{@bank_account.routing_number}/, json_data['paymentOption']['alternativePaymentMethod']['RoutingNumber'])
+        assert_match(/#{@bank_account.account_number}/, json_data['paymentOption']['alternativePaymentMethod']['AccountNumber'])
+      end
+    end
+  end
+
+  def test_successful_verify
+    @options.merge!(authentication_only_type: 'ACCOUNTVERIFICATION')
+    stub_comms(@gateway, :ssl_request) do
+      @gateway.verify(@credit_card, @options)
+    end.check_request(skip_response: true) do |_method, endpoint, data, _headers|
+      if /payment/.match?(endpoint)
+        json_data = JSON.parse(data)
+        assert_match(/Auth/, json_data['transactionType'])
+        assert_match(/ACCOUNTVERIFICATION/, json_data['authenticationOnlyType'])
+        assert_equal '0', json_data['amount']
+      end
+    end
+  end
+
+  def test_successful_purchase_with_apple_pay
+    stub_comms(@gateway, :ssl_request) do
+      @gateway.purchase(@amount, @apple_pay_card, @options)
+    end.check_request do |_method, endpoint, data, _headers|
+      if /payment/.match?(endpoint)
+        json_data = JSON.parse(data)
+        assert_equal 'ApplePay', json_data['paymentOption']['card']['externalToken']['externalTokenProvider']
+        assert_not_nil json_data['paymentOption']['card']['externalToken']['cryptogram']
+      end
+    end.respond_with(successful_purchase_response)
+  end
+
+  def test_successful_purchase_with_google_pay
+    stub_comms(@gateway, :ssl_request) do
+      @gateway.purchase(@amount, @google_pay_card, @options)
+    end.check_request do |_method, endpoint, data, _headers|
+      if /payment/.match?(endpoint)
+        json_data = JSON.parse(data)
+        assert_equal 'GooglePay', json_data['paymentOption']['card']['externalToken']['externalTokenProvider']
+        assert_not_nil json_data['paymentOption']['card']['externalToken']['cryptogram']
       end
     end.respond_with(successful_purchase_response)
   end

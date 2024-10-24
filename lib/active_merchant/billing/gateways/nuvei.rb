@@ -22,6 +22,11 @@ module ActiveMerchant
         init_payment: '/initPayment'
       }
 
+      NETWORK_TOKENIZATION_CARD_MAPPING = {
+        'apple_pay' => 'ApplePay',
+        'google_pay' => 'GooglePay'
+      }
+
       def initialize(options = {})
         requires!(options, :merchant_id, :merchant_site_id, :secret_key)
         super
@@ -38,7 +43,8 @@ module ActiveMerchant
         add_customer_ip(post, options)
         add_stored_credentials(post, payment, options)
         post[:userTokenId] = options[:user_token_id] if options[:user_token_id]
-
+        post[:isPartialApproval] = options[:is_partial_approval] ? 1 : 0
+        post[:authenticationOnlyType] = options[:authentication_only_type] if options[:authentication_only_type]
         if options[:execute_threed]
           execute_3ds_flow(post, money, payment, transaction_type, options)
         else
@@ -92,7 +98,7 @@ module ActiveMerchant
 
         build_post_data(post)
         add_amount(post, money, options)
-        add_payment_method(post, payment, :cardData)
+        add_payment_method(post, payment, :cardData, options)
         add_address(post, payment, options)
         add_customer_ip(post, options)
 
@@ -148,7 +154,9 @@ module ActiveMerchant
           gsub(%r(("cardCvv\\?":\\?")\d+), '\1[FILTERED]').
           gsub(%r(("merchantId\\?":\\?")\d+), '\1[FILTERED]').
           gsub(%r(("merchantSiteId\\?":\\?")\d+), '\1[FILTERED]').
-          gsub(%r(("merchantKey\\?":\\?")\d+), '\1[FILTERED]')
+          gsub(%r(("merchantKey\\?":\\?")\d+), '\1[FILTERED]').
+          gsub(%r(("accountNumber\\?":\\?")\d+), '\1[FILTERED]').
+          gsub(%r(("cryptogram\\?":\\?")[^"\\]*)i, '\1[FILTERED]')
       end
 
       private
@@ -161,6 +169,12 @@ module ActiveMerchant
         return unless options[:ip]
 
         post[:deviceDetails] = { ipAddress: options[:ip] }
+      end
+
+      def url_details(post, options)
+        return unless options[:notification_url]
+
+        post[:urlDetails] = { notificationUrl: options[:notification_url] }
       end
 
       def add_amount(post, money, options)
@@ -180,21 +194,47 @@ module ActiveMerchant
         }
       end
 
-      def add_payment_method(post, payment, key, options = {})
-        payment_data = payment.is_a?(CreditCard) ? credit_card_hash(payment) : payment
+      def get_last_four_digits(number)
+        number[-4..-1]
+      end
 
-        if payment.is_a?(CreditCard)
+      def add_bank_account(post, payment, options)
+        post[:paymentOption] = {
+          alternativePaymentMethod: {
+            paymentMethod: 'apmgw_ACH',
+            AccountNumber: payment.account_number,
+            RoutingNumber: payment.routing_number,
+            classic_ach_account_type: options[:account_type]
+          }
+        }
+      end
+
+      def add_payment_method(post, payment, key, options = {})
+        payment_data = payment.is_a?(CreditCard) || payment.is_a?(NetworkTokenizationCreditCard) ? credit_card_hash(payment) : payment
+        if payment.is_a?(NetworkTokenizationCreditCard)
+          payment_data[:brand] = payment.brand.upcase
+
+          external_token = {}
+          external_token[:externalTokenProvider] = NETWORK_TOKENIZATION_CARD_MAPPING[payment.source.to_s]
+          external_token[:cryptogram] = payment.payment_cryptogram if payment.payment_cryptogram
+          external_token[:eciProvider] = payment.eci if payment.eci
+
+          payment_data.slice!(:cardNumber, :expirationMonth, :expirationYear, :last4Digits, :brand, :CVV)
+
+          post[:paymentOption] = { card: payment_data.merge(externalToken: external_token) }
+
+        elsif payment.is_a?(CreditCard)
           post[key] = key == :paymentOption ? { card: payment_data } : payment_data
+        elsif payment.is_a?(Check)
+          post[:userTokenId] = options[:user_token_id]
+          add_bank_account(post, payment, options)
+          url_details(post, options)
         else
           post[key] = {
             userPaymentOptionId: payment_data,
             card: { CVV: options[:cvv_code] }
           }
         end
-      end
-
-      def get_last_four_digits(number)
-        number[-4..-1]
       end
 
       def add_customer_names(full_name, payment_method)
@@ -379,7 +419,7 @@ module ActiveMerchant
       end
 
       def success_from(response)
-        response[:status] == 'SUCCESS' && %w[APPROVED REDIRECT].include?(response[:transactionStatus])
+        response[:status] == 'SUCCESS' && %w[APPROVED REDIRECT PENDING].include?(response[:transactionStatus])
       end
 
       def authorization_from(action, response, post)

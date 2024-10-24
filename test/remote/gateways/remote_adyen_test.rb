@@ -8,6 +8,8 @@ class RemoteAdyenTest < Test::Unit::TestCase
 
     @bank_account = check(account_number: '123456789', routing_number: '121000358')
 
+    @adyen_bank_account = check(account_number: '9876543210', routing_number: '021000021')
+
     @declined_bank_account = check(account_number: '123456789', routing_number: '121000348')
 
     @general_bank_account = check(name: 'A. Klaassen', account_number: '123456789', routing_number: 'NL13TEST0123456789')
@@ -287,7 +289,7 @@ class RemoteAdyenTest < Test::Unit::TestCase
   end
 
   def test_successful_authorize_with_network_token
-    response = @gateway.authorize(@amount, @nt_credit_card, @options.merge(switch_cryptogram_mapping_nt: true))
+    response = @gateway.authorize(@amount, @nt_credit_card, @options)
     assert_success response
     assert_equal 'Authorised', response.message
   end
@@ -562,15 +564,15 @@ class RemoteAdyenTest < Test::Unit::TestCase
   end
 
   def test_successful_purchase_with_apple_pay
-    response = @gateway.purchase(@amount, @apple_pay_card, @options.merge(switch_cryptogram_mapping_nt: true))
+    response = @gateway.purchase(@amount, @apple_pay_card, @options)
     assert_success response
     assert_equal '[capture-received]', response.message
   end
 
-  def test_successful_purchase_with_apple_pay_with_ld_flag_false
-    response = @gateway.purchase(@amount, @apple_pay_card, @options.merge(switch_cryptogram_mapping_nt: false))
+  def test_succesful_authorize_with_manual_capture
+    response = @gateway.authorize(@amount, @credit_card, @options.merge(manual_capture: 'true'))
     assert_success response
-    assert_equal '[capture-received]', response.message
+    assert_equal 'Authorised', response.message
   end
 
   def test_succesful_purchase_with_brand_override
@@ -586,7 +588,7 @@ class RemoteAdyenTest < Test::Unit::TestCase
   end
 
   def test_successful_purchase_with_google_pay
-    response = @gateway.purchase(@amount, @google_pay_card, @options.merge(switch_cryptogram_mapping_nt: true))
+    response = @gateway.purchase(@amount, @google_pay_card, @options)
     assert_success response
     assert_equal '[capture-received]', response.message
   end
@@ -622,7 +624,7 @@ class RemoteAdyenTest < Test::Unit::TestCase
   end
 
   def test_successful_purchase_with_google_pay_and_truncate_order_id
-    response = @gateway.purchase(@amount, @google_pay_card, @options.merge(order_id: @long_order_id, switch_cryptogram_mapping_nt: true))
+    response = @gateway.purchase(@amount, @google_pay_card, @options.merge(order_id: @long_order_id))
     assert_success response
     assert_equal '[capture-received]', response.message
   end
@@ -646,7 +648,7 @@ class RemoteAdyenTest < Test::Unit::TestCase
   end
 
   def test_successful_purchase_with_network_token
-    response = @gateway.purchase(@amount, @nt_credit_card, @options.merge(switch_cryptogram_mapping_nt: true))
+    response = @gateway.purchase(@amount, @nt_credit_card, @options)
     assert_success response
     assert_equal '[capture-received]', response.message
   end
@@ -1036,7 +1038,6 @@ class RemoteAdyenTest < Test::Unit::TestCase
 
   def test_successful_unstore
     assert response = @gateway.store(@credit_card, @options)
-
     assert !response.authorization.split('#')[2].nil?
     assert_equal 'Authorised', response.message
 
@@ -1051,7 +1052,7 @@ class RemoteAdyenTest < Test::Unit::TestCase
   end
 
   def test_successful_unstore_with_bank_account
-    assert response = @gateway.store(@bank_account, @options)
+    assert response = @gateway.store(@adyen_bank_account, @options)
 
     assert !response.authorization.split('#')[2].nil?
     assert_equal 'Authorised', response.message
@@ -1462,8 +1463,7 @@ class RemoteAdyenTest < Test::Unit::TestCase
     first_options = options.merge(
       order_id: generate_unique_id,
       shopper_interaction: 'Ecommerce',
-      recurring_processing_model: 'Subscription',
-      switch_cryptogram_mapping_nt: true
+      recurring_processing_model: 'Subscription'
     )
     assert auth = @gateway.authorize(@amount, @apple_pay_card, first_options)
     assert_success auth
@@ -1475,11 +1475,9 @@ class RemoteAdyenTest < Test::Unit::TestCase
 
     used_options = options.merge(
       order_id: generate_unique_id,
-      skip_mpi_data: 'Y',
       shopper_interaction: 'ContAuth',
       recurring_processing_model: 'Subscription',
-      network_transaction_id: auth.network_transaction_id,
-      switch_cryptogram_mapping_nt: true
+      network_transaction_id: auth.network_transaction_id
     )
 
     assert purchase = @gateway.purchase(@amount, @apple_pay_card, used_options)
@@ -1590,6 +1588,13 @@ class RemoteAdyenTest < Test::Unit::TestCase
       customer_reference: '101'
     }
     response = @gateway.purchase(@amount, @credit_card, @options.merge(level_2_data: level_2_data))
+    assert_success response
+    assert_equal '[capture-received]', response.message
+  end
+
+  def test_successful_response_with_recurring_detail_reference
+    response = @gateway.purchase(@amount, @credit_card, @options.merge(recurring_detail_reference: '12345'))
+
     assert_success response
     assert_equal '[capture-received]', response.message
   end
